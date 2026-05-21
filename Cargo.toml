@@ -1,0 +1,57 @@
+[package]
+name = "kubevirt-ui-mcp"
+version = "0.1.0"
+edition = "2021"
+description = "Unified MCP server for kubevirt-ui: coverage, context, spec docs, CI triage, cluster inspection, oc/virtctl ops, project linting, and Jira memory"
+rust-version = "1.75"
+
+[[bin]]
+name = "kubevirt-ui-mcp"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# JSON / MCP protocol
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# File walking (context, spec, linter, coverage)
+walkdir = "2"
+
+# Regex (coverage scanner, ci-triage, memory)
+regex = "1"
+
+# TypeScript AST parsing (context, linter)
+tree-sitter = "0.24"
+tree-sitter-typescript = "0.23"
+
+# Concurrent index (context)
+dashmap = "6.1"
+
+# File watching (context)
+notify = "6.1"
+notify-debouncer-mini = "0.4"
+
+# HTTP client (cluster-inspector, memory, ci-triage)
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# XML parsing (ci-triage JUnit)
+quick-xml = { version = "0.36", features = ["serialize"] }
+
+# Date/time (memory)
+chrono = { version = "0.4", features = ["serde"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+
+[dev-dependencies]
+tempfile = "3.27.0"
