@@ -41,33 +41,14 @@ All configuration is through environment variables. The binary reads them at sta
 
 ## Cursor MCP config
 
-### Global (`~/.cursor/mcp.json`)
+Both config examples use `$KUBEVIRT_UI_MCP_DIR` (path to this repo) and `$KUBEVIRT_PROJECT_ROOT` (path to the `kubevirt-ui` checkout). Set them before launching Cursor:
 
-```json
-{
-  "mcpServers": {
-    "Playwright": {
-      "command": "npx",
-      "args": ["@playwright/mcp@latest", "--ignore-https-errors"]
-    },
-    "kubevirt-ui-mcp": {
-      "command": "/home/bmaio/Developer/Projects/kubevirt-ui-mcp/target/release/kubevirt-ui-mcp",
-      "args": [],
-      "env": {
-        "KUBEVIRT_PROJECT_ROOT": "/home/bmaio/Developer/Projects/kubevirt-ui",
-        "PLAYWRIGHT_TESTS_ROOT": "/home/bmaio/Developer/Projects/kubevirt-ui/playwright/tests",
-        "PLAYWRIGHT_DOCS_ROOT": "/home/bmaio/Developer/Projects/kubevirt-ui/playwright/docs",
-        "GITHUB_REPO": "kubevirt-ui/kubevirt-plugin",
-        "JIRA_BASE_URL": "https://redhat.atlassian.net"
-      }
-    }
-  }
-}
+```bash
+export KUBEVIRT_UI_MCP_DIR=/path/to/kubevirt-ui-mcp
+export KUBEVIRT_PROJECT_ROOT=/path/to/kubevirt-ui
 ```
 
-### Project-local (`kubevirt-ui/.cursor/mcp.json`)
-
-Uses `$KUBEVIRT_UI_MCP_DIR` and `$KUBEVIRT_PROJECT_ROOT` from the shell environment:
+### Global (`~/.cursor/mcp.json`)
 
 ```json
 {
@@ -91,11 +72,28 @@ Uses `$KUBEVIRT_UI_MCP_DIR` and `$KUBEVIRT_PROJECT_ROOT` from the shell environm
 }
 ```
 
-Set the env vars before launching Cursor:
+### Project-local (`kubevirt-ui/.cursor/mcp.json`)
 
-```bash
-export KUBEVIRT_UI_MCP_DIR=/home/bmaio/Developer/Projects/kubevirt-ui-mcp
-export KUBEVIRT_PROJECT_ROOT=/home/bmaio/Developer/Projects/kubevirt-ui
+```json
+{
+  "mcpServers": {
+    "Playwright": {
+      "command": "npx",
+      "args": ["@playwright/mcp@latest", "--ignore-https-errors"]
+    },
+    "kubevirt-ui-mcp": {
+      "command": "${KUBEVIRT_UI_MCP_DIR}/target/release/kubevirt-ui-mcp",
+      "args": [],
+      "env": {
+        "KUBEVIRT_PROJECT_ROOT": "${KUBEVIRT_PROJECT_ROOT}",
+        "PLAYWRIGHT_TESTS_ROOT": "${KUBEVIRT_PROJECT_ROOT}/playwright/tests",
+        "PLAYWRIGHT_DOCS_ROOT": "${KUBEVIRT_PROJECT_ROOT}/playwright/docs",
+        "GITHUB_REPO": "kubevirt-ui/kubevirt-plugin",
+        "JIRA_BASE_URL": "https://redhat.atlassian.net"
+      }
+    }
+  }
+}
 ```
 
 ---
