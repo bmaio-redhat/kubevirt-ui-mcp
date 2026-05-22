@@ -17,6 +17,230 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
 cargo test
 ```
 
+## Container image (Docker / Podman)
+
+A multi-stage `Dockerfile` is included. The builder stage compiles the binary
+inside the official Rust image and the runtime stage copies only the stripped
+binary into a minimal `debian:bookworm-slim` image. The resulting image is
+~30 MB.
+
+> All commands below work with both **Docker** and **Podman** — just substitute
+> `docker` with `podman` (or alias `docker=podman`).
+
+### Build the image
+
+```bash
+docker build -t kubevirt-ui-mcp:latest .
+# or
+podman build -t kubevirt-ui-mcp:latest .
+```
+
+### Run the container
+
+The server speaks JSON-RPC 2.0 over **stdio**, so you interact with it via
+stdin/stdout exactly like the native binary. The examples below use
+`--interactive` (`-i`) to wire stdio through.
+
+#### Minimal smoke test (no cluster access)
+
+```bash
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
+  | docker run --rm -i kubevirt-ui-mcp:latest \
+  | python3 -c "import sys,json; t=json.load(sys.stdin)['result']['tools']; print(len(t), 'tools')"
+```
+
+#### With kubeconfig and project root mounted
+
+```bash
+docker run --rm -i \
+  -v "$HOME/.kube:/home/mcp/.kube:ro" \
+  -v "/path/to/kubevirt-ui:/workspace:ro" \
+  -e KUBEVIRT_PROJECT_ROOT=/workspace \
+  -e PLAYWRIGHT_TESTS_ROOT=/workspace/playwright/tests \
+  -e PLAYWRIGHT_DOCS_ROOT=/workspace/playwright/docs \
+  -e GITHUB_REPO=kubevirt-ui/kubevirt-plugin \
+  kubevirt-ui-mcp:latest
+```
+
+#### With `oc` / `virtctl` binaries
+
+The image does **not** bundle `oc` or `virtctl` because they are large and
+version-sensitive. Mount them from the host:
+
+```bash
+docker run --rm -i \
+  -v "$HOME/.kube:/home/mcp/.kube:ro" \
+  -v "$(which oc):/usr/local/bin/oc:ro" \
+  -v "$(which virtctl):/usr/local/bin/virtctl:ro" \
+  -v "/path/to/kubevirt-ui:/workspace:ro" \
+  -e KUBEVIRT_PROJECT_ROOT=/workspace \
+  kubevirt-ui-mcp:latest
+```
+
+#### Persistent Jira cache
+
+```bash
+mkdir -p "$HOME/.cache/kubevirt-memory"
+docker run --rm -i \
+  -v "$HOME/.cache/kubevirt-memory:/cache" \
+  -e STORE_PATH=/cache/store.json \
+  kubevirt-ui-mcp:latest
+```
+
+### Connecting to the containerised MCP
+
+MCP uses **JSON-RPC 2.0 over stdio** as its transport. Clients connect by
+spawning the server as a child process and piping stdin/stdout. With a
+container this means every `docker run` invocation IS the connection — there is
+no persistent TCP port to open.
+
+#### Pattern 1 — spawn-per-session (recommended for most clients)
+
+The client spawns a fresh container for each session and tears it down when
+done. This is the simplest approach and works with every MCP-capable tool.
+
+```bash
+# Manual one-shot test
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
+  | docker run --rm -i \
+      -v "$HOME/.kube:/home/mcp/.kube:ro" \
+      -v "/path/to/kubevirt-ui:/workspace:ro" \
+      -e KUBEVIRT_PROJECT_ROOT=/workspace \
+      -e PLAYWRIGHT_TESTS_ROOT=/workspace/playwright/tests \
+      -e PLAYWRIGHT_DOCS_ROOT=/workspace/playwright/docs \
+      -e GITHUB_REPO=kubevirt-ui/kubevirt-plugin \
+      kubevirt-ui-mcp:latest \
+  | python3 -m json.tool
+```
+
+**Cursor** (`~/.cursor/mcp.json` — global) uses this pattern automatically when
+you set `command` to `docker`:
+
+```json
+{
+  "mcpServers": {
+    "kubevirt-ui-mcp": {
+      "command": "docker",
+      "args": [
+        "run", "--rm", "-i",
+        "-v", "${env:HOME}/.kube:/home/mcp/.kube:ro",
+        "-v", "${env:KUBEVIRT_PROJECT_ROOT}:/workspace:ro",
+        "-e", "KUBEVIRT_PROJECT_ROOT=/workspace",
+        "-e", "PLAYWRIGHT_TESTS_ROOT=/workspace/playwright/tests",
+        "-e", "PLAYWRIGHT_DOCS_ROOT=/workspace/playwright/docs",
+        "-e", "GITHUB_REPO=kubevirt-ui/kubevirt-plugin",
+        "-e", "JIRA_BASE_URL=https://redhat.atlassian.net",
+        "kubevirt-ui-mcp:latest"
+      ]
+    }
+  }
+}
+```
+
+Replace `docker` with `podman` to use Podman instead.
+
+**Project-local** (`kubevirt-ui/.cursor/mcp.json`) — same structure, just
+placed in the project directory.
+
+#### Pattern 2 — long-lived daemon via Unix socket (share one container across clients)
+
+If you want to avoid the cold-start cost of spawning a new container per
+session, run one container as a daemon and let multiple clients connect to it
+through a Unix socket using `socat` as a stdio↔socket bridge.
+
+**Step 1** — start the daemon container with `socat` inside, forwarding the
+Unix socket to the MCP server's stdio:
+
+```bash
+# Create a socket directory on the host
+mkdir -p "$HOME/.local/share/kubevirt-ui-mcp"
+
+docker run -d --name kubevirt-ui-mcp \
+  -v "$HOME/.kube:/home/mcp/.kube:ro" \
+  -v "/path/to/kubevirt-ui:/workspace:ro" \
+  -v "$HOME/.local/share/kubevirt-ui-mcp:/run/mcp" \
+  -e KUBEVIRT_PROJECT_ROOT=/workspace \
+  -e PLAYWRIGHT_TESTS_ROOT=/workspace/playwright/tests \
+  -e PLAYWRIGHT_DOCS_ROOT=/workspace/playwright/docs \
+  -e GITHUB_REPO=kubevirt-ui/kubevirt-plugin \
+  --entrypoint socat \
+  kubevirt-ui-mcp:latest \
+  UNIX-LISTEN:/run/mcp/kubevirt-ui-mcp.sock,fork,reuseaddr \
+  EXEC:/usr/local/bin/kubevirt-ui-mcp
+```
+
+> `socat` is not in the runtime image by default. Either add it to the
+> Dockerfile's `apt-get install` line, or use the host `socat` to bridge
+> instead (see step 2b).
+
+**Step 2a** — connect any client via a thin wrapper script
+(`~/.local/bin/kubevirt-ui-mcp-client`):
+
+```bash
+#!/usr/bin/env bash
+exec socat STDIO \
+  UNIX-CONNECT:"$HOME/.local/share/kubevirt-ui-mcp/kubevirt-ui-mcp.sock"
+```
+
+```bash
+chmod +x ~/.local/bin/kubevirt-ui-mcp-client
+```
+
+Point Cursor (or any MCP client) at this wrapper:
+
+```json
+{
+  "mcpServers": {
+    "kubevirt-ui-mcp": {
+      "command": "/home/<you>/.local/bin/kubevirt-ui-mcp-client",
+      "args": []
+    }
+  }
+}
+```
+
+**Step 2b** — alternatively, use the host `socat` without modifying the image
+by running the daemon differently:
+
+```bash
+# On the host, listen on the socket and pipe into `docker exec`
+socat \
+  UNIX-LISTEN:"$HOME/.local/share/kubevirt-ui-mcp/kubevirt-ui-mcp.sock",fork,reuseaddr \
+  EXEC:"docker exec -i kubevirt-ui-mcp /usr/local/bin/kubevirt-ui-mcp"
+```
+
+**Stop the daemon:**
+
+```bash
+docker stop kubevirt-ui-mcp && docker rm kubevirt-ui-mcp
+# Podman
+podman stop kubevirt-ui-mcp && podman rm kubevirt-ui-mcp
+```
+
+### Podman-specific notes
+
+Podman runs rootless by default, which is fully compatible with the container
+(the binary runs as UID 1001). A few things to keep in mind:
+
+* **SELinux label** — add `:z` to volume mounts on SELinux-enforcing hosts:
+
+  ```bash
+  podman run --rm -i \
+    -v "$HOME/.kube:/home/mcp/.kube:ro,z" \
+    -v "/path/to/kubevirt-ui:/workspace:ro,z" \
+    -e KUBEVIRT_PROJECT_ROOT=/workspace \
+    kubevirt-ui-mcp:latest
+  ```
+
+* **Socket** — if you use `podman-docker` (the Docker-compatibility shim) no
+  other changes are needed. If you call `podman` directly in the Cursor config,
+  make sure `podman` is on `$PATH` when Cursor starts.
+
+* **Podman Machine (macOS / Windows)** — host paths in `-v` must be accessible
+  inside the VM. Use `podman machine ssh` to verify or adjust the mount.
+
+---
+
 ## Configuration
 
 All configuration is through environment variables. The binary reads them at startup; none are required — sensible defaults are used when omitted.
