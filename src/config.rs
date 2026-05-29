@@ -27,6 +27,9 @@ pub struct Config {
     pub jenkins_url: Option<String>,
     pub jenkins_user: Option<String>,
     pub jenkins_token: Option<String>,
+
+    // ── Product docs ───────────────────────────────────────────────────────
+    pub docs_cache_path: PathBuf,
 }
 
 impl Config {
@@ -79,6 +82,12 @@ impl Config {
             jenkins_url: std::env::var("JENKINS_URL").ok(),
             jenkins_user: std::env::var("JENKINS_USER").ok(),
             jenkins_token: std::env::var("JENKINS_TOKEN").ok(),
+            docs_cache_path: std::env::var("DOCS_CACHE_PATH")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| {
+                    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+                    PathBuf::from(home).join(".local/share/kubevirt-memory/docs-cache.json")
+                }),
         }
     }
 
