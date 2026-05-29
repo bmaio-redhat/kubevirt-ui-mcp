@@ -3,6 +3,7 @@ mod cluster_inspector;
 mod config;
 mod context;
 mod coverage;
+mod docs;
 mod linter;
 mod mcp;
 mod memory;
@@ -21,6 +22,7 @@ use mcp::protocol::{
     Capabilities, InitializeResult, Request, Response, ServerInfo, ToolCallResult, ToolDef,
 };
 use memory::SharedStore;
+use docs::SharedDocsCache;
 
 // ── AppState ──────────────────────────────────────────────────────────────────
 
@@ -28,6 +30,7 @@ struct AppState {
     cfg: Config,
     index: SharedIndex,
     store: SharedStore,
+    docs_cache: SharedDocsCache,
     kube_client: Arc<cluster_inspector::KubeClient>,
     http_client: Arc<reqwest::Client>,
 }
@@ -90,10 +93,17 @@ async fn main() {
     // Build kube client
     let kube_client = cluster_inspector::build_kube_client(&cfg);
 
+    // Load product docs cache
+    let docs_cache = {
+        let dc = docs::cache::DocsCache::load(&cfg.docs_cache_path);
+        docs::cache::shared(dc)
+    };
+
     let state = Arc::new(AppState {
         cfg,
         index,
         store,
+        docs_cache,
         kube_client,
         http_client,
     });
@@ -205,6 +215,9 @@ fn all_tools() -> Vec<Value> {
 
     // Linter tools
     tools.extend(linter_tools());
+
+    // Product docs tools
+    tools.extend(docs::tools::all_tools());
 
     tools
 }
@@ -468,6 +481,14 @@ async fn dispatch_tool(name: &str, params: &Value, state: &Arc<AppState>) -> Too
     ];
     if linter_names.contains(&name) {
         return dispatch_linter_tool(name, params, &state.cfg);
+    }
+
+    // Product docs tools
+    let docs_names = [
+        "list_product_doc_sections", "fetch_product_doc", "search_product_docs",
+    ];
+    if docs_names.contains(&name) {
+        return docs::tools::dispatch(name, params, &state.docs_cache, &state.http_client, &state.cfg).await;
     }
 
     ToolCallResult::error(format!("Unknown tool: '{}'", name))
